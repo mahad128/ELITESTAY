@@ -1,4 +1,4 @@
-import { defineConfig, type HtmlTagDescriptor, type Plugin } from 'vite'
+import { defineConfig, loadEnv, type HtmlTagDescriptor, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
@@ -23,6 +23,7 @@ export default defineConfig(({ mode }) => {
       figmaErrorOverlayReplay(),
       figmaReactRefreshBoundaryFallback(),
       figmaMakeKitPlugin({ storiesGlob: '/src/**/*.stories.{ts,tsx,js,jsx}' }),
+      devApiRoutes(loadEnv(mode, process.cwd(), '')),
     ],
     resolve: {
       alias: {
@@ -45,6 +46,38 @@ export default defineConfig(({ mode }) => {
     },
   }
 })
+
+/** Serves /api/reviews from api/reviews.ts during `vite dev`; Vercel runs it as a function in production. */
+function devApiRoutes(env: Record<string, string>): Plugin {
+  return {
+    name: 'dev-api-routes',
+    configureServer(server) {
+      server.middlewares.use(async (req, res, next) => {
+        if (req.url?.split('?')[0] !== '/api/reviews') return next()
+        try {
+          const chunks: Buffer[] = []
+          for await (const chunk of req) chunks.push(chunk as Buffer)
+          const body = chunks.length ? Buffer.concat(chunks) : undefined
+          const request = new Request(`http://localhost${req.url}`, {
+            method: req.method,
+            headers: { 'Content-Type': req.headers['content-type'] || 'application/json' },
+            body: req.method === 'GET' || req.method === 'HEAD' ? undefined : body,
+          })
+          const mod = await server.ssrLoadModule('/api/reviews.ts')
+          const response: Response = await mod.handleReviews(request, env.DATABASE_URL || process.env.DATABASE_URL)
+          res.statusCode = response.status
+          response.headers.forEach((value, key) => res.setHeader(key, value))
+          res.end(await response.text())
+        } catch (error) {
+          console.error('Reviews API error:', error)
+          res.statusCode = 500
+          res.setHeader('Content-Type', 'application/json')
+          res.end(JSON.stringify({ error: 'Something went wrong. Please try again.' }))
+        }
+      })
+    },
+  }
+}
 
 type FigmaSiteConfiguration = {
   title?: string

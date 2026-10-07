@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import type { FormEvent } from 'react'
+import useSWR from 'swr'
 
 const GOLD = '#A67C3D'
 const GOLD_LIGHT = '#6F604C'
@@ -598,27 +599,19 @@ function Gallery({ scrollY }: { scrollY: number }) {
   )
 }
 
-// Reviews are stored on this device until a shared review backend is connected.
 type Review = { id: string; name: string; rating: number; text: string; date: string }
-const REVIEW_KEY = 'elite-stay-lahore-reviews'
+const REVIEWS_API = `${import.meta.env.BASE_URL.replace(/\/$/, '')}/api/reviews`
 
-function loadReviews(): Review[] {
-  try {
-    const saved: unknown = JSON.parse(localStorage.getItem(REVIEW_KEY) || '[]')
-    if (!Array.isArray(saved)) return []
-    return saved.filter((item): item is Review =>
-      item !== null && typeof item === 'object' &&
-      typeof item.id === 'string' && typeof item.name === 'string' &&
-      typeof item.text === 'string' && typeof item.date === 'string' &&
-      Number.isInteger(item.rating) && item.rating >= 1 && item.rating <= 5
-    )
-  } catch {
-    return []
-  }
+async function fetchReviews(url: string): Promise<{ reviews: Review[] }> {
+  const res = await fetch(url)
+  if (!res.ok) throw new Error('Could not load reviews.')
+  return res.json()
 }
 
 function Reviews() {
-  const [reviews, setReviews] = useState<Review[]>(loadReviews)
+  const { data, mutate, isLoading } = useSWR<{ reviews: Review[] }>(REVIEWS_API, fetchReviews)
+  const reviews = data?.reviews ?? []
+  const [submitting, setSubmitting] = useState(false)
   const [current, setCurrent] = useState(0)
   const [paused, setPaused] = useState(false)
   const touchStartX = useRef<number | null>(null)
@@ -656,22 +649,31 @@ function Reviews() {
     event.currentTarget.style.setProperty('--review-rotate-y', '0deg')
   }
 
-  function submitReview(event: FormEvent<HTMLFormElement>) {
+  async function submitReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const cleanName = name.trim()
     const cleanText = text.trim()
-    if (!cleanName || !cleanText) return
-    const next = [{ id: crypto.randomUUID(), name: cleanName, rating, text: cleanText, date: new Date().toISOString() }, ...reviews]
+    if (!cleanName || !cleanText || submitting) return
+    setSubmitting(true)
+    setMessage('')
     try {
-      localStorage.setItem(REVIEW_KEY, JSON.stringify(next))
-      setReviews(next)
+      const res = await fetch(REVIEWS_API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: cleanName, rating, text: cleanText }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Your review could not be saved.')
+      await mutate(prev => ({ reviews: [data.review, ...(prev?.reviews ?? [])] }), { revalidate: false })
       setCurrent(0)
       setName('')
       setText('')
       setRating(5)
-      setMessage('Thank you! Your review is visible on this device.')
-    } catch {
-      setMessage('Your review could not be saved. Please check your browser storage settings.')
+      setMessage('Thank you! Your review is now live for all guests.')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Your review could not be saved. Please try again.')
+    } finally {
+      setSubmitting(false)
     }
   }
 
@@ -712,9 +714,9 @@ function Reviews() {
             </div>
             <label htmlFor="review-text" style={{ display: 'block', fontFamily: BODY, color: GOLD_LIGHT, fontSize: '0.8rem', marginBottom: '0.5rem' }}>YOUR EXPERIENCE</label>
             <textarea id="review-text" required maxLength={1000} rows={5} value={text} onChange={e => setText(e.target.value)} style={{ ...fieldStyle, resize: 'vertical', marginBottom: '1.3rem' }} placeholder="Tell us about your stay..." />
-            <button className="review-submit" type="submit" style={{ width: '100%', maxWidth: '340px', padding: '0.95rem', background: `linear-gradient(135deg,${GOLD},${GOLD_DARK})`, color: '#fffaf1', border: 0, borderRadius: '2px', fontFamily: BODY, fontWeight: 700, letterSpacing: '0.15em', cursor: 'pointer' }}>POST REVIEW <span aria-hidden="true">↗</span></button>
+            <button className="review-submit" type="submit" style={{ width: '100%', maxWidth: '340px', padding: '0.95rem', background: `linear-gradient(135deg,${GOLD},${GOLD_DARK})`, color: '#fffaf1', border: 0, borderRadius: '2px', fontFamily: BODY, fontWeight: 700, letterSpacing: '0.15em', cursor: submitting ? 'wait' : 'pointer', opacity: submitting ? 0.7 : 1 }} disabled={submitting}>{submitting ? 'POSTING...' : <>POST REVIEW <span aria-hidden="true">↗</span></>}</button>
             {message && <p role="status" style={{ color: GOLD_LIGHT, fontFamily: BODY, fontSize: '0.82rem', lineHeight: 1.5 }}>{message}</p>}
-            <p style={{ color: GOLD_LIGHT, opacity: 0.6, fontFamily: BODY, fontSize: '0.75rem', lineHeight: 1.5, marginBottom: 0 }}>Reviews are currently saved only in your browser. Shared guest reviews are coming soon.</p>
+            <p style={{ color: GOLD_LIGHT, opacity: 0.6, fontFamily: BODY, fontSize: '0.75rem', lineHeight: 1.5, marginBottom: 0 }}>Your review will be visible to every guest who visits Elite Stay.</p>
           </form>
           <div className={`review-carousel-panel reviews-reveal ${visible ? 'is-visible' : ''}`} role="region" aria-roledescription="carousel" aria-label="Guest reviews" onMouseEnter={() => setPaused(true)} onMouseLeave={() => setPaused(false)} onFocusCapture={() => setPaused(true)} onBlurCapture={e => { if (!e.currentTarget.contains(e.relatedTarget)) setPaused(false) }} onTouchStart={e => { touchStartX.current = e.touches[0].clientX; setPaused(true) }} onTouchEnd={e => { if (touchStartX.current !== null && reviews.length > 1) { const delta = e.changedTouches[0].clientX - touchStartX.current; if (Math.abs(delta) > 45) changeReview(delta < 0 ? 1 : -1) } touchStartX.current = null; setPaused(false) }} onTouchCancel={() => { touchStartX.current = null; setPaused(false) }} style={{ transitionDelay: '0.12s' }}>
             <div className="review-panel-label"><span>THE GUEST JOURNAL</span><span>{reviews.length ? `${String(current + 1).padStart(2, '0')} / ${String(reviews.length).padStart(2, '0')}` : 'ELITE STAY · LAHORE'}</span></div>
@@ -724,7 +726,7 @@ function Reviews() {
                 <div style={{ position: 'relative', zIndex: 1, textAlign: 'center', padding: '0 1rem' }}>
                   <div style={{ fontFamily: BODY, fontSize: '0.62rem', letterSpacing: '0.32em', color: GOLD, marginBottom: '0.9rem' }}>THE FIRST CHAPTER</div>
                   <p style={{ color: TEXT, fontFamily: DISPLAY, fontSize: 'clamp(1.45rem,3vw,2rem)', lineHeight: 1.4, maxWidth: '360px', margin: '0 auto 0.7rem' }}>A beautiful stay deserves a story.</p>
-                  <p style={{ color: GOLD_LIGHT, opacity: 0.65, fontFamily: BODY, fontSize: '0.85rem' }}>Be the first to share yours.</p>
+                  <p style={{ color: GOLD_LIGHT, opacity: 0.65, fontFamily: BODY, fontSize: '0.85rem' }}>{isLoading ? 'Loading guest stories...' : 'Be the first to share yours.'}</p>
                 </div>
               </div>
             ) : (
